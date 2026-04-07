@@ -1842,6 +1842,60 @@ EOS
     end
   end
 
+  def test_strict_response_size_check_chunked
+    # Incomplete chunked response (missing terminal 0-size chunk)
+    incomplete_chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" \
+                         "b\r\nhello world\r\n"
+
+    # Without strict check, silently returns incomplete data
+    @client.strict_response_size_check = false
+    @client.test_loopback_http_response << incomplete_chunked
+    assert_equal('hello world', @client.get_content('http://dummy'))
+
+    # With strict check, raises BadResponseError
+    @client.reset_all
+    @client.strict_response_size_check = true
+    @client.test_loopback_http_response << incomplete_chunked
+    assert_raise(HTTPClient::BadResponseError) do
+      @client.get_content('http://dummy')
+    end
+  end
+
+  def test_strict_response_size_check_chunked_eof_mid_data
+    # EOF in the middle of chunk data (e.g., TCP RST mid-transfer)
+    # Chunk declares 11 bytes but only 5 arrive before EOF
+    truncated_chunk = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" \
+                      "b\r\nhello"
+
+    @client.strict_response_size_check = false
+    @client.test_loopback_http_response << truncated_chunk
+    @client.get_content('http://dummy') # should not raise
+
+    @client.reset_all
+    @client.strict_response_size_check = true
+    @client.test_loopback_http_response << truncated_chunk
+    assert_raise(HTTPClient::BadResponseError) do
+      @client.get_content('http://dummy')
+    end
+  end
+
+  def test_strict_response_size_check_chunked_eof_after_data
+    # EOF after chunk data but before trailing CRLF
+    missing_crlf = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" \
+                   "b\r\nhello world"
+
+    @client.strict_response_size_check = false
+    @client.test_loopback_http_response << missing_crlf
+    @client.get_content('http://dummy') # should not raise
+
+    @client.reset_all
+    @client.strict_response_size_check = true
+    @client.test_loopback_http_response << missing_crlf
+    assert_raise(HTTPClient::BadResponseError) do
+      @client.get_content('http://dummy')
+    end
+  end
+
   def test_socket_local
     @client.socket_local.host = '127.0.0.1'
     assert_equal('hello', @client.get_content(serverurl + 'hello'))

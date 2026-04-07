@@ -905,8 +905,11 @@ class HTTPClient
       while true
        ::Timeout.timeout(@receive_timeout, ReceiveTimeoutError) do
           len = @socket.gets(RS)
-          if len.nil? # EOF
+          if len.nil? # EOF before chunked terminator
             close
+            if @strict_response_size_check
+              raise BadResponseError.new("EOF while reading chunked response (during chunk-size line)")
+            end
             return
           end
           @chunk_length = len.hex
@@ -915,8 +918,20 @@ class HTTPClient
             @socket.gets(RS)
             return
           end
-          @socket.read(@chunk_length, buf)
-          @socket.read(2)
+          if @socket.read(@chunk_length, buf).nil?
+            close
+            if @strict_response_size_check
+              raise BadResponseError.new("EOF while reading chunked response (during chunk data)")
+            end
+            return
+          end
+          if @socket.read(2).nil? # trailing CRLF
+            close
+            if @strict_response_size_check
+              raise BadResponseError.new("EOF while reading chunked response (during chunk trailing CRLF)")
+            end
+            return
+          end
         end
         unless buf.empty?
           yield buf
@@ -937,7 +952,7 @@ class HTTPClient
           rescue EOFError
             buf = nil
             if @strict_response_size_check
-              raise BadResponseError.new("EOF while reading chunked response")
+              raise BadResponseError.new("EOF while reading response body")
             end
           end
         end
